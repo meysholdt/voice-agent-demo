@@ -6,89 +6,32 @@ This demo application uses Recall.ai's [Output Media](https://docs.recall.ai/doc
 
 ## Prerequisites
 
-1. [Node.js](https://nodejs.org/en/) (for Node.js server implementation)
-2. [Python 3.8+](https://www.python.org/downloads/) (for Python server implementation)
-3. [Ngrok](https://ngrok.com/docs/getting-started/)
-4. [Recall.ai API Key](https://www.recall.ai/)
-5. [OpenAI API Key](https://platform.openai.com/docs/overview)
+1. [Node.js](https://nodejs.org/en/)
+2. [Ngrok](https://ngrok.com/docs/getting-started/)
+3. [Recall.ai API key](https://www.recall.ai/)
+4. [OpenAI API key](https://platform.openai.com/docs/overview) with access to `gpt-realtime-1.5`
 
 ## Installation
 
-### Clone the Repository
-
-```bash
-git clone ...
-```
-
-### Install Dependencies
-
-#### Client
+From the repository root, build the frontend and install the relay dependencies.
 
 ```bash
 cd client
 npm install
-```
-
-#### Server
-
-The server implementation is available in both Node.js and Python. Choose your preferred implementation:
-
-##### Node.js Implementation
-
-```bash
+npm run build
 cd ../node-server
 npm install
 ```
 
-##### Python Implementation
+In `node-server/`, copy `.env.example` to `.env` and set `OPENAI_API_KEY`.
 
-```bash
-cd ../python-server
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Configuration
-
-### OpenAI API Key
-Note: You **must** add credits to your OpenAI account before running this demo. If your account has no credits, the demo will connect successfully, but the bot will not respond to anything you say in the meeting.
-
-#### Node.js Server
-
-In the node-server directory, copy the `.env.example` file and rename it to `.env`. Then, add your OpenAI API key.
-
-#### Python Server
-
-In the python-server directory, copy the `.env.example` file and rename it to `.env`. Then, add your OpenAI API key. The PORT is optional and defaults to 3000 if not specified.
+The historical Python relay in `python-server/` uses the retired Realtime beta.
 
 ## Quickstart
 
-If you want to quickly test the functionality of this application, you don't need to host the frontend yourself. You can use our pre-hosted demo frontend at [https://recallai-demo.netlify.app](https://recallai-demo.netlify.app). However, you will still need to provide your OpenAI API key and ngrok URL.
-
-1. Start your backend server (choose either Node.js or Python implementation) and expose it using ngrok:
-
-Node.js:
-
-```bash
-cd node-server
-npm run dev
-```
-
-Python:
-
-```bash
-cd python-server
-python server.py
-```
-
-Then in a separate terminal:
-
-```bash
-ngrok http 3000
-```
-
-2. Create a bot by sending the following curl request, replacing YOUR_RECALL_TOKEN and YOUR_NGROK_URL with your values:
+1. Run `npm run dev` in `node-server/`. The Node server serves both the built webpage and the WebSocket relay on port 3000.
+2. Run `ngrok http 3000` in a separate terminal.
+3. Create a bot using the tunnel's HTTPS URL as the Output Media webpage. The webpage connects to the relay on the same host. Use the API hostname for your Recall.ai workspace's region.
 
 ```bash
 curl --request POST \
@@ -103,7 +46,7 @@ curl --request POST \
       "camera": {
         "kind": "webpage",
         "config": {
-          "url": "https://recallai-demo.netlify.app?wss=wss://YOUR_NGROK_URL"
+          "url": "https://YOUR_NGROK_HOST"
         }
       }
     },
@@ -130,7 +73,7 @@ cd client
 npm run dev
 ```
 
-The client will be available at `http://localhost:5173`.
+With the Node relay running, open `http://localhost:5173/?wss=ws://localhost:3000/`. For a bot run, rebuild the client after changes and use the public HTTPS URL for port 3000.
 
 ### Modifying the Agent
 
@@ -146,20 +89,7 @@ npm run build
 
 The built files will be in the `dist` directory, ready to be deployed to your hosting service.
 
-Once the frontend is deployed on a hosting service, update your bot configuration to use your custom webpage URL:
-
-```json
-{
-  "output_media": {
-    "kind": "webpage",
-    "config": {
-      "url": "https://your-custom-url.com?wss=wss://your-server.com"
-    }
-  }
-}
-```
-
-Using this, you will be able to interact with a customized voice agent.
+When hosting the frontend and relay separately, pass the public WebSocket URL as the `wss` query parameter, for example `https://your-frontend.com/?wss=wss://your-relay.com/`.
 
 ## Acknowledgements
 
@@ -168,4 +98,4 @@ This project incorporates code from [OpenAI's real-time API demo](https://github
 ## FAQ
 
 ### The webpage shows that my bot is connected, why isn't it replying to me in the meeting?
-If the webpage is showing a successful connection but the bot isn't speaking, it's likely that you need to add credits to your OpenAI account. If your account has no credits, the demo will connect successfully, but the bot will not respond to anything you say in the meeting.
+Check the Node server log. After someone speaks, `input_audio_buffer.speech_started` and `input_audio_buffer.committed` show that OpenAI received a spoken turn. `response.output_audio.delta` shows that OpenAI sent audio back. For connection or quota errors, check the error shown on the webpage and in the server log.

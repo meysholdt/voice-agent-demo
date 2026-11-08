@@ -1,82 +1,89 @@
-import { WebSocketServer } from "ws";
-import { RealtimeClient } from "@openai/realtime-api-beta";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
+import express from "express";
+import WebSocket, { WebSocketServer } from "ws";
 
 dotenv.config();
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
+const { OPENAI_API_KEY, PORT = 3000 } = process.env;
 if (!OPENAI_API_KEY) {
-  console.error(
-    `Environment variable "OPENAI_API_KEY" is required.\n` +
-      `Please set it in your .env file.`
-  );
+  console.error('Set OPENAI_API_KEY in node-server/.env.');
   process.exit(1);
 }
 
-const PORT = 3000;
-const wss = new WebSocketServer({ port: PORT });
-
-wss.on("connection", async (ws, req) => {
-  if (!req.url) {
-    console.log("No URL provided, closing connection.");
-    ws.close();
-    return;
-  }
-
-  const url = new URL(req.url, `https://${req.headers.host}`);
-  const pathname = url.pathname;
-
-  if (pathname !== "/") {
-    console.log(`Invalid pathname: "${pathname}"`);
-    ws.close();
-    return;
-  }
-
-  const client = new RealtimeClient({ apiKey: OPENAI_API_KEY });
-
-  // Relay: OpenAI Realtime API Event -> Browser Event
-  client.realtime.on("server.*", (event) => {
-    console.log(`Relaying "${event.type}" to Client`);
-    ws.send(JSON.stringify(event));
-  });
-  client.realtime.on("close", () => ws.close());
-
-  // Relay: Browser Event -> OpenAI Realtime API Event
-  // We need to queue data waiting for the OpenAI connection
-  const messageQueue = [];
-  const messageHandler = (data) => {
-    try {
-      const event = JSON.parse(data);
-      console.log(`Relaying "${event.type}" to OpenAI`);
-      client.realtime.send(event.type, event);
-    } catch (e) {
-      console.error(e.message);
-      console.log(`Error parsing event from client: ${data}`);
-    }
-  };
-  ws.on("message", (data) => {
-    if (!client.isConnected()) {
-      messageQueue.push(data);
-    } else {
-      messageHandler(data);
-    }
-  });
-  ws.on("close", () => client.disconnect());
-
-  // Connect to OpenAI Realtime API
-  try {
-    console.log(`Connecting to OpenAI...`);
-    await client.connect();
-  } catch (e) {
-    console.log(`Error connecting to OpenAI: ${e.message}`);
-    ws.close();
-    return;
-  }
-  console.log(`Connected to OpenAI successfully!`);
-  while (messageQueue.length) {
-    messageHandler(messageQueue.shift());
-  }
+const app = express();
+app.use(express.static(fileURLToPath(new URL("../client/dist/", import.meta.url))));
+app.get("/", (_request, response) => {
+  response.status(503).send("Build the webpage with npm run build in client/.");
 });
 
-console.log(`Websocket server listening on port ${PORT}`);
+const server = createServer(app);
+const relay = new WebSocketServer({ server, path: "/" });
+const realtimeUrl = "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5";
+
+relay.on("connection", (browser) => {
+  const upstream = new WebSocket(realtimeUrl, {
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    handshakeTimeout: 10_000,
+  });
+
+  let lastAudioResponse;
+  upstream.on("message", (data, isBinary) => {
+    let event;
+    try {
+      event = JSON.parse(data.toString());
+    } catch {
+      console.error("OpenAI returned an invalid Realtime event.");
+      browser.close(1011, "Invalid Realtime event");
+      return;
+    }
+    switch (event.type) {
+      case "session.created":
+      case "session.updated":
+      case "input_audio_buffer.speech_started":
+      case "input_audio_buffer.committed":
+        console.log(`OpenAI: ${event.type}`);
+        break;
+      case "response.output_audio.delta":
+        if (event.response_id !== lastAudioResponse) {
+          lastAudioResponse = event.response_id;
+          console.log("OpenAI: response.output_audio.delta");
+        }
+        break;
+      case "response.done":
+        console.log(`OpenAI: response.done (${event.response.status})`);
+        break;
+      case "error":
+        console.error("OpenAI error:", event.error.code ?? event.error.type);
+        break;
+    }
+    if (browser.readyState === WebSocket.OPEN) {
+      browser.send(data, { binary: isBinary });
+    }
+  });
+
+  browser.on("message", (data, isBinary) => {
+    // The webpage waits for session.created before sending its first event.
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.send(data, { binary: isBinary });
+    }
+  });
+
+  const closeUpstream = () => upstream.close();
+  browser.on("close", closeUpstream);
+  browser.on("error", closeUpstream);
+  upstream.on("close", (code) => {
+    browser.close(code === 1000 ? 1000 : 1011, "OpenAI session closed");
+  });
+  upstream.on("error", (error) => {
+    if (browser.readyState === WebSocket.OPEN) {
+      console.error("OpenAI WebSocket error:", error.message);
+      browser.close(1011, "Could not connect to OpenAI");
+    }
+  });
+});
+
+server.listen(Number(PORT), () => {
+  console.log(`Voice agent listening on port ${server.address().port}`);
+});

@@ -36,6 +36,7 @@ export class WavRecorder {
     this._devices = [];
     // State variables
     this.stream = null;
+    this.context = null;
     this.processor = null;
     this.source = null;
     this.node = null;
@@ -322,6 +323,7 @@ export class WavRecorder {
     }
 
     const context = new AudioContext({ sampleRate: this.sampleRate });
+    this.context = context;
     const source = context.createMediaStreamSource(this.stream);
     // Load and execute the module script.
     try {
@@ -364,13 +366,17 @@ export class WavRecorder {
     analyser.smoothingTimeConstant = 0.1;
     node.connect(analyser);
     if (this.outputToSpeakers) {
-      // eslint-disable-next-line no-console
       console.warn(
         'Warning: Output to speakers may affect sound quality,\n' +
           'especially due to system audio feedback preventative measures.\n' +
           'use only for debugging',
       );
       analyser.connect(context.destination);
+    } else {
+      // Keep the capture graph running without feeding meeting audio back to the call.
+      const mute = context.createGain();
+      mute.gain.value = 0;
+      analyser.connect(mute).connect(context.destination);
     }
 
     this.source = source;
@@ -429,9 +435,10 @@ export class WavRecorder {
    * Start recording stream and storing to memory from the connected audio source
    * @param {(data: { mono: Int16Array; raw: Int16Array }) => any} [chunkProcessor]
    * @param {number} [chunkSize] chunkProcessor will not be triggered until this size threshold met in mono audio
+   * @param {boolean} [storeRecording] Whether to retain audio for export
    * @returns {Promise<true>}
    */
-  async record(chunkProcessor = () => {}, chunkSize = 8192) {
+  async record(chunkProcessor = () => {}, chunkSize = 8192, storeRecording = true) {
     if (!this.processor) {
       throw new Error('Session ended: please call .begin() first');
     } else if (this.recording) {
@@ -446,7 +453,10 @@ export class WavRecorder {
       mono: new ArrayBuffer(0),
     };
     this.log('Recording ...');
-    await this._event('start');
+    if (this.context.state === 'suspended') {
+      await this.context.resume();
+    }
+    await this._event('start', { storeRecording });
     this.recording = true;
     return true;
   }
@@ -542,6 +552,22 @@ export class WavRecorder {
       await this.end();
     }
     return true;
+  }
+
+  /** Stops capture and releases its audio resources without exporting a recording. */
+  async close() {
+    this.stream?.getTracks().forEach((track) => track.stop());
+    this.stream = null;
+    this.processor = null;
+    this.source = null;
+    this.node = null;
+    this.analyser = null;
+    this.recording = false;
+    const context = this.context;
+    this.context = null;
+    if (context && context.state !== 'closed') {
+      await context.close();
+    }
   }
 }
 

@@ -10,6 +10,7 @@ class AudioProcessor extends AudioWorkletProcessor {
   initialize() {
     this.foundAudio = false;
     this.recording = false;
+    this.storeRecording = true;
     this.chunks = [];
   }
 
@@ -117,11 +118,12 @@ class AudioProcessor extends AudioWorkletProcessor {
   }
 
   receive(e) {
-    const { event, id } = e.data;
+    const { event, id, data } = e.data;
     let receiptData = {};
     switch (event) {
       case 'start':
         this.recording = true;
+        this.storeRecording = data?.storeRecording ?? true;
         break;
       case 'stop':
         this.recording = false;
@@ -174,7 +176,7 @@ class AudioProcessor extends AudioWorkletProcessor {
     // There's latency at the beginning of a stream before recording starts
     // Make sure we actually receive audio data before we start storing chunks
     let sliceIndex = 0;
-    if (!this.foundAudio) {
+    if (!this.foundAudio && inputs) {
       for (const channel of inputs) {
         sliceIndex = 0; // reset for each channel
         if (this.foundAudio) {
@@ -197,7 +199,9 @@ class AudioProcessor extends AudioWorkletProcessor {
       // We need to copy the TypedArray, because the \`process\`
       // internals will reuse the same buffer to hold each input
       const chunk = inputs.map((input) => input.slice(sliceIndex));
-      this.chunks.push(chunk);
+      if (this.storeRecording) {
+        this.chunks.push(chunk);
+      }
       this.sendChunk(chunk);
     }
     return true;

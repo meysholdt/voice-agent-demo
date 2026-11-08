@@ -26,17 +26,18 @@ export class WavStreamPlayer {
    * @returns {Promise<true>}
    */
   async connect() {
-    this.context = new AudioContext({ sampleRate: this.sampleRate });
-    if (this.context.state === 'suspended') {
-      await this.context.resume();
+    const context = new AudioContext({ sampleRate: this.sampleRate });
+    this.context = context;
+    if (context.state === 'suspended') {
+      await context.resume();
     }
     try {
-      await this.context.audioWorklet.addModule(this.scriptSrc);
+      await context.audioWorklet.addModule(this.scriptSrc);
     } catch (e) {
       console.error(e);
       throw new Error(`Could not add audioWorklet module: ${this.scriptSrc}`);
     }
-    const analyser = this.context.createAnalyser();
+    const analyser = context.createAnalyser();
     analyser.fftSize = 8192;
     analyser.smoothingTimeConstant = 0.1;
     this.analyser = analyser;
@@ -80,11 +81,13 @@ export class WavStreamPlayer {
       const { event } = e.data;
       if (event === 'stop') {
         streamNode.disconnect();
-        this.stream = null;
+        if (this.stream === streamNode) {
+          this.stream = null;
+        }
       } else if (event === 'offset') {
-        const { requestId, trackId, offset } = e.data;
+        const { requestId, trackId, offset, pending } = e.data;
         const currentTime = offset / this.sampleRate;
-        this.trackSampleOffsets[requestId] = { trackId, offset, currentTime };
+        this.trackSampleOffsets[requestId] = { trackId, offset, currentTime, pending };
       }
     };
     this.analyser.disconnect();
@@ -124,7 +127,7 @@ export class WavStreamPlayer {
   /**
    * Gets the offset (sample count) of the currently playing stream
    * @param {boolean} [interrupt]
-   * @returns {{trackId: string|null, offset: number, currentTime: number}}
+   * @returns {Promise<{trackId: string|null, offset: number, currentTime: number, pending: boolean}|null>}
    */
   async getTrackSampleOffset(interrupt = false) {
     if (!this.stream) {
@@ -135,10 +138,16 @@ export class WavStreamPlayer {
       event: interrupt ? 'interrupt' : 'offset',
       requestId,
     });
-    let trackSampleOffset;
-    while (!trackSampleOffset) {
-      trackSampleOffset = this.trackSampleOffsets[requestId];
+    if (interrupt) {
+      this.stream = null;
+    }
+    while (this.context && !this.trackSampleOffsets[requestId]) {
       await new Promise((r) => setTimeout(() => r(), 1));
+    }
+    const trackSampleOffset = this.trackSampleOffsets[requestId];
+    delete this.trackSampleOffsets[requestId];
+    if (!trackSampleOffset) {
+      return null;
     }
     const { trackId } = trackSampleOffset;
     if (interrupt && trackId) {
@@ -150,10 +159,19 @@ export class WavStreamPlayer {
   /**
    * Strips the current stream and returns the sample offset of the audio
    * @param {boolean} [interrupt]
-   * @returns {{trackId: string|null, offset: number, currentTime: number}}
+   * @returns {Promise<{trackId: string|null, offset: number, currentTime: number, pending: boolean}|null>}
    */
   async interrupt() {
     return this.getTrackSampleOffset(true);
+  }
+
+  async close() {
+    const context = this.context;
+    this.context = null;
+    this.stream = null;
+    if (context && context.state !== 'closed') {
+      await context.close();
+    }
   }
 }
 

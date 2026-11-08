@@ -11,7 +11,6 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@openai/realtime-api-beta": "github:openai/openai-realtime-api-beta",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "ws": "^8.18.0"
